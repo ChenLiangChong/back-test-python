@@ -19,6 +19,10 @@ use crate::common::DayTracker;
 
 pub struct OrbDayLow {
     range_pts: f64,
+    range_pct: f64,
+    sl_pct: f64,
+    tp_pct: f64,
+    day_open: f64,
     vol_ratio: f64,
     deadline_min: u32,
     at_deadline: bool,
@@ -45,13 +49,16 @@ pub struct OrbDayLow {
 impl OrbDayLow {
     pub const PARAMS: &'static [(&'static str, f64, &'static str)] = &[
         ("range_pts", 100.0, "條件1: 9:30 前日盤高低差 > N 點"),
+        ("range_pct", 0.0, ">0 時改用百分比: 高低差 > 開盤價 × N% (取代 range_pts)"),
         ("vol_ratio", 0.3, "條件2: 9:30 前大盤累積成交 > 昨量 × N"),
         ("use_vol", 1.0, "1 = 使用條件2 (需 --series taiex_vol=...), 0 = 只看條件1"),
         ("deadline", 930.0, "條件須在此時間前達成 (hhmm)"),
         ("at_deadline", 0.0, "1 = 等到 deadline (9:30) 才檢查條件並掛單; 0 = 之前任何時間達標就掛"),
         ("offset", 1.0, "觸價空單 = day low − N 點"),
         ("sl", 40.0, "停損 (點) — 使用者未指定, 暫用事件盤的 40"),
+        ("sl_pct", 0.0, ">0 時停損改用百分比: 進場價 × N% (取代 sl)"),
         ("tp", 0.0, "停利 (點), 0 = 不設"),
+        ("tp_pct", 0.0, ">0 時停利改用百分比: 進場價 × N% (取代 tp)"),
         ("exit_hhmm", 1340.0, "強制平倉時間"),
         ("qty", 1.0, "口數"),
     ];
@@ -59,6 +66,10 @@ impl OrbDayLow {
     pub fn new(p: &Params, vol: Option<Arc<Series>>) -> Self {
         Self {
             range_pts: p.get("range_pts", 100.0),
+            range_pct: p.get("range_pct", 0.0),
+            sl_pct: p.get("sl_pct", 0.0),
+            tp_pct: p.get("tp_pct", 0.0),
+            day_open: f64::NAN,
             vol_ratio: p.get("vol_ratio", 0.3),
             deadline_min: hhmm_to_min(p.get("deadline", 930.0) as u32),
             at_deadline: p.flag("at_deadline", false),
@@ -92,6 +103,7 @@ impl Strategy for OrbDayLow {
             self.session_day = twq_core::time::day_of(bar.ts);
             self.hi = f64::MIN;
             self.lo = f64::MAX;
+            self.day_open = bar.open;
             self.armed = false;
             self.done = false;
             if !ctx.is_flat() || ctx.has_working_orders() {
@@ -118,7 +130,8 @@ impl Strategy for OrbDayLow {
         if self.at_deadline && minute_of_day(end) < self.deadline_min {
             return; // evaluate only once, at the deadline
         }
-        let cond_range = self.hi - self.lo > self.range_pts;
+        let threshold = if self.range_pct > 0.0 { self.day_open * self.range_pct / 100.0 } else { self.range_pts };
+        let cond_range = self.hi - self.lo > threshold;
         let cond_vol = match self.vol.as_mut() {
             None => true,
             Some(v) => {
@@ -138,12 +151,11 @@ impl Strategy for OrbDayLow {
             }
         };
         if cond_range && cond_vol && ctx.is_flat() {
-            let br = Bracket {
-                stop_dist: (self.sl > 0.0).then_some(self.sl),
-                take_dist: (self.tp > 0.0).then_some(self.tp),
-            };
-            let id =
-                ctx.submit(Side::Sell, self.qty, OrderKind::Stop(self.lo - self.offset), Tif::Rod, 0, "orb_daylow");
+            let entry = self.lo - self.offset;
+            let sl = if self.sl_pct > 0.0 { entry * self.sl_pct / 100.0 } else { self.sl };
+            let tp = if self.tp_pct > 0.0 { entry * self.tp_pct / 100.0 } else { self.tp };
+            let br = Bracket { stop_dist: (sl > 0.0).then_some(sl), take_dist: (tp > 0.0).then_some(tp) };
+            let id = ctx.submit(Side::Sell, self.qty, OrderKind::Stop(entry), Tif::Rod, 0, "orb_daylow");
             ctx.attach_bracket(id, br);
             self.armed = true;
             self.signal_days += 1;
