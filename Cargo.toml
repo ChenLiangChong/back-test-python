@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/twq-core",
+    "crates/twq-backtest",
+    "crates/twq-strategies",
+    "crates/twq-live",
+    "crates/twq-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+twq-core = { path = "crates/twq-core" }
+twq-backtest = { path = "crates/twq-backtest" }
+twq-strategies = { path = "crates/twq-strategies" }
+twq-live = { path = "crates/twq-live" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+
+[profile.bench]
+inherits = "release"

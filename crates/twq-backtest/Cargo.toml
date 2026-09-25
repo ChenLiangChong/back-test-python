@@ -1,0 +1,12 @@
+[package]
+name = "twq-backtest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Event-driven backtest engine and parallel optimizer"
+
+[dependencies]
+twq-core.workspace = true
+anyhow.workspace = true
+rayon.workspace = true
+serde.workspace = true

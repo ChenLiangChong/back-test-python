@@ -1,0 +1,20 @@
+[package]
+name = "twq-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "twq command line: backtest / optimize / live / data tools"
+
+[[bin]]
+name = "twq"
+path = "src/main.rs"
+
+[dependencies]
+twq-core.workspace = true
+twq-backtest.workspace = true
+twq-strategies.workspace = true
+twq-live.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "twq-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core types, Taiwan market rules, indicators and data IO"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true

@@ -1,0 +1,2 @@
+comtypes>=1.4
+pywin32>=306

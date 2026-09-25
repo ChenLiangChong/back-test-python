@@ -1,0 +1,10 @@
+[package]
+name = "twq-strategies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Strategies shared by backtest and live trading"
+
+[dependencies]
+twq-core.workspace = true
+anyhow.workspace = true

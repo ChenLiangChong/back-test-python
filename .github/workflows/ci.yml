@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twq-${{ matrix.os }}
+          path: |
+            target/release/twq
+            target/release/twq.exe
+          if-no-files-found: ignore
+
+  bridge-e2e:
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build --release
+      - name: Python bridge (fake broker) <-> twq live
+        run: |
+          python bridge/capital_bridge.py --fake --fake-seconds 15 --port 9101 &
+          sleep 1
+          ./target/release/twq live --bridge 127.0.0.1:9101 --mode live --i-understand-live-risk \
+            -s ma_cross -p fast=2,slow=4 --max-pos 2 --max-qty 2 --journal journal.jsonl
+          grep -q '"ev":"fill"' journal.jsonl

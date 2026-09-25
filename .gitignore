@@ -1,0 +1,11 @@
+/target
+*.bin
+!data/sample/*.bin
+/reports
+/out
+journal*.jsonl
+KILL
+bridge/config.ini
+bridge/logs/
+__pycache__/
+*.pyc
