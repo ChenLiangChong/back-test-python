@@ -126,12 +126,26 @@ pub struct CumulativeDaily {
     idx: usize,
     cur_day: i64,
     prev_total: Option<f64>,
+    prev_day: Option<i64>,
     today_last: Option<f64>,
 }
 
 impl CumulativeDaily {
     pub fn new(data: Arc<Series>) -> Self {
-        Self { data, idx: 0, cur_day: i64::MIN, prev_total: None, today_last: None }
+        Self { data, idx: 0, cur_day: i64::MIN, prev_total: None, prev_day: None, today_last: None }
+    }
+
+    /// Calendar day (day number) of the total returned as "previous day" by [`Self::at`].
+    /// Callers should check it really is the previous *trading* day: a gap in the data
+    /// would otherwise compare against an older session.
+    pub fn prev_day_for(&self, today: i64) -> Option<i64> {
+        if self.cur_day == today {
+            self.prev_day
+        } else if self.cur_day < today && self.cur_day != i64::MIN {
+            Some(self.cur_day)
+        } else {
+            self.prev_day
+        }
     }
 
     /// Advance to `now`; returns `(today's cumulative value so far, previous day's total)`.
@@ -143,6 +157,7 @@ impl CumulativeDaily {
             if d != self.cur_day {
                 if self.cur_day != i64::MIN {
                     self.prev_total = self.today_last;
+                    self.prev_day = Some(self.cur_day);
                 }
                 self.cur_day = d;
                 self.today_last = None;

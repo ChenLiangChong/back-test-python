@@ -114,7 +114,10 @@ def parse_mi5mins(raw: bytes, day: dt.date):
     return rows
 
 
-def fetch_twse(out_dir: str, start: dt.date) -> int:
+BLOCK_MARKERS = ("FOR SECURITY REASONS", "安全性考量")
+
+
+def fetch_twse(out_dir: str, start: dt.date, delay: float = 3.5, max_block_wait: float = 1800) -> int:
     cache = os.path.join(out_dir, "twse_mi5mins")
     os.makedirs(cache, exist_ok=True)
     today = dt.date.today()
@@ -126,20 +129,39 @@ def fetch_twse(out_dir: str, start: dt.date) -> int:
             n += 1
             continue
         raw = None
-        for u in TWSE_URLS:
-            try:
-                raw = http_get(u.format(ymd=ymd))
-            except RuntimeError as e:
-                print(f"  證交所 {d}: {e}")
-                raw = None
-            if raw:
+        waited = 0.0
+        while True:
+            blocked = False
+            for u in TWSE_URLS:
                 try:
-                    if parse_mi5mins(raw, d) is not None:
-                        break
-                except (ValueError, KeyError):
-                    pass
-                raw = None
-        time.sleep(3.5)  # TWSE allows roughly 3 requests per 5 seconds
+                    raw = http_get(u.format(ymd=ymd))
+                except RuntimeError as e:
+                    print(f"  證交所 {d}: {e}")
+                    raw, blocked = None, True
+                    continue
+                if raw and any(m in raw.decode("utf-8", "replace") for m in BLOCK_MARKERS):
+                    raw, blocked = None, True
+                    continue
+                if raw:
+                    try:
+                        if parse_mi5mins(raw, d) is not None:
+                            break
+                    except (ValueError, KeyError):
+                        pass
+                    raw = None
+            if raw is not None or not blocked:
+                break
+            # TWSE's firewall throttles bursts: back off and retry the same day
+            if waited >= max_block_wait:
+                print(f"  證交所暫時封鎖, 已等 {waited:.0f}s, 先停止 (稍後重跑會從中斷處繼續)")
+                break
+            pause = min(300.0, 60.0 + waited)  # 60s, 120s, 240s, 300s…
+            print(f"  證交所 {d}: 被暫時封鎖, {pause:.0f} 秒後重試…")
+            time.sleep(pause)
+            waited += pause
+        time.sleep(delay)  # TWSE allows roughly 3 requests per 5 seconds
+        if raw is None and waited >= max_block_wait:
+            break  # still blocked: stop, keep what we have
         if raw is None:
             continue  # holiday
         with open(cpath, "wb") as f:
@@ -172,6 +194,7 @@ def main():
     ap.add_argument("--twse-from", help="證交所: 起始日 YYYY-MM-DD (預設與期交所相同)")
     ap.add_argument("--skip-taifex", action="store_true")
     ap.add_argument("--skip-twse", action="store_true")
+    ap.add_argument("--twse-delay", type=float, default=3.5, help="證交所每次請求間隔秒數")
     a = ap.parse_args()
     if not a.skip_taifex:
         print("下載期交所逐筆成交 (前 30 個交易日)…")
@@ -182,7 +205,7 @@ def main():
     if not a.skip_twse:
         start = dt.date.fromisoformat(a.twse_from) if a.twse_from else dt.date.today() - dt.timedelta(days=a.days + 5)
         print(f"下載證交所每5秒成交統計 (從 {start})…")
-        n = fetch_twse(a.out, start)
+        n = fetch_twse(a.out, start, delay=a.twse_delay)
         print(f"證交所: {n} 天 → {a.out}/taiex_cumamt.csv (成交金額), {a.out}/taiex_cumvol.csv (成交量)")
 
 

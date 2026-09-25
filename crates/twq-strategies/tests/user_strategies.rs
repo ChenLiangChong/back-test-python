@@ -119,8 +119,9 @@ fn clip_tick_mode_uses_pre_release_price() {
 #[test]
 fn orb_daylow_enters_on_break_of_day_low() {
     let d = make_ts(2026, 9, 2, 8, 45, 0, 0);
+    // the previous trading day's session (so "昨量" really is yesterday's), quiet
+    let mut bars = flat_bars(make_ts(2026, 9, 1, 8, 45, 0, 0), 300, 20050.0);
     // 08:45-09:29: range 20000..20120 (>100), then from 09:30 drift down through the low
-    let mut bars = Vec::new();
     for i in 0..45 {
         let px = if i == 10 { 20120.0 } else { 20050.0 };
         bars.push(Bar {
@@ -159,6 +160,16 @@ fn orb_daylow_enters_on_break_of_day_low() {
     assert_eq!(r.trades[0].entry_price, 19999.0); // day low 20000 - 1
     assert_eq!(r.trades[0].exit_tag, "flatten"); // 13:40 exit
     assert_eq!(r.trades[0].exit_price, 19945.0);
+
+    // turnover data missing for the previous trading day -> the day is skipped
+    let mut map = HashMap::new();
+    map.insert(
+        "taiex_vol".to_string(),
+        Arc::new(vec![(make_ts(2026, 8, 31, 13, 30, 0, 0), 3000.0), (make_ts(2026, 9, 2, 9, 20, 0, 0), 1200.0)]),
+    );
+    let inp = Inputs { events: Arc::new(vec![]), series: map };
+    let mut s = build_with("orb_daylow", &Params::new(), &inp).unwrap();
+    assert!(run_bars(&bars, &mut s, &cfg()).trades.is_empty());
 
     // volume condition not met -> no trade
     let mut map = HashMap::new();

@@ -309,9 +309,22 @@ pub fn parse_taifex_ticks(bytes: &[u8], product: &str, expiry: Option<&str>) -> 
     let keep: Box<dyn Fn(&Raw) -> bool> = if expiry.is_some() {
         Box::new(|_| true)
     } else {
+        // A monthly contract is dropped from its settlement trading day onwards (third
+        // Wednesday; that day's session starts with the night session of the evening
+        // before), so the continuous series rolls cleanly instead of stopping at 13:30.
+        let settle = |exp: u32| {
+            let (y, m) = ((exp / 100) as i64, exp % 100);
+            let first = crate::time::days_from_civil(y, m, 1);
+            let first_wd = (first + 3).rem_euclid(7); // 0 = Monday
+            first + (2 - first_wd).rem_euclid(7) + 14
+        };
         let mut vol: HashMap<(i64, u32), f64> = HashMap::new();
         for r in &raws {
-            *vol.entry((crate::time::trading_day(r.ts), r.exp)).or_default() += r.qty;
+            let td = crate::time::trading_day(r.ts);
+            if (1..=12).contains(&(r.exp % 100)) && td >= settle(r.exp) {
+                continue;
+            }
+            *vol.entry((td, r.exp)).or_default() += r.qty;
         }
         let mut best: HashMap<i64, (u32, f64)> = HashMap::new();
         for ((day, exp), v) in vol {
@@ -562,6 +575,19 @@ mod tests {
         assert_eq!(bars[0].volume, 1234.0);
         let c = "日期,開盤價,最高價,最低價,收盤價,成交量\n2024-01-02,1,2,0.5,1.5,10\n".as_bytes();
         assert_eq!(parse_bars_csv(c).unwrap()[0].close, 1.5);
+    }
+
+    #[test]
+    fn taifex_rolls_on_settlement_day() {
+        // 2026-09-16 is the third Wednesday: the September contract must not be used
+        let s = "h\n\
+20260916,TX     ,202609     ,084500,46000,40,-,-,*\n\
+20260916,TX     ,202609     ,130000,46010,40,-,-,\n\
+20260916,TX     ,202610     ,084500,46100,2,-,-,*\n\
+20260916,TX     ,202610     ,134400,46120,2,-,-,\n";
+        let t = parse_taifex_ticks(s.as_bytes(), "TX", None).unwrap();
+        assert_eq!(t.len(), 2);
+        assert!(t.iter().all(|x| x.price >= 46100.0));
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub struct OrbDayLow {
     range_pts: f64,
     vol_ratio: f64,
     deadline_min: u32,
+    at_deadline: bool,
     offset: f64,
     sl: f64,
     tp: f64,
@@ -32,8 +33,13 @@ pub struct OrbDayLow {
     lo: f64,
     armed: bool,
     done: bool,
+    /// Calendar day of the current and of the previous day session seen.
+    session_day: i64,
+    prev_session_day: i64,
     /// Days on which both conditions were met (for diagnostics).
     pub signal_days: u32,
+    /// Days skipped because the turnover series lacked today or the previous trading day.
+    pub missing_vol_days: u32,
 }
 
 impl OrbDayLow {
@@ -42,6 +48,7 @@ impl OrbDayLow {
         ("vol_ratio", 0.3, "條件2: 9:30 前大盤累積成交 > 昨量 × N"),
         ("use_vol", 1.0, "1 = 使用條件2 (需 --series taiex_vol=...), 0 = 只看條件1"),
         ("deadline", 930.0, "條件須在此時間前達成 (hhmm)"),
+        ("at_deadline", 0.0, "1 = 等到 deadline (9:30) 才檢查條件並掛單; 0 = 之前任何時間達標就掛"),
         ("offset", 1.0, "觸價空單 = day low − N 點"),
         ("sl", 40.0, "停損 (點) — 使用者未指定, 暫用事件盤的 40"),
         ("tp", 0.0, "停利 (點), 0 = 不設"),
@@ -54,6 +61,7 @@ impl OrbDayLow {
             range_pts: p.get("range_pts", 100.0),
             vol_ratio: p.get("vol_ratio", 0.3),
             deadline_min: hhmm_to_min(p.get("deadline", 930.0) as u32),
+            at_deadline: p.flag("at_deadline", false),
             offset: p.get("offset", 1.0),
             sl: p.get("sl", 40.0),
             tp: p.get("tp", 0.0),
@@ -65,7 +73,10 @@ impl OrbDayLow {
             lo: f64::MAX,
             armed: false,
             done: false,
+            session_day: i64::MIN,
+            prev_session_day: i64::MIN,
             signal_days: 0,
+            missing_vol_days: 0,
         }
     }
 }
@@ -77,6 +88,8 @@ impl Strategy for OrbDayLow {
             return; // day session only
         }
         if self.days.is_new_day(bar.ts) {
+            self.prev_session_day = self.session_day;
+            self.session_day = twq_core::time::day_of(bar.ts);
             self.hi = f64::MIN;
             self.lo = f64::MAX;
             self.armed = false;
@@ -102,13 +115,27 @@ impl Strategy for OrbDayLow {
             self.done = true; // conditions not met before the deadline
             return;
         }
+        if self.at_deadline && minute_of_day(end) < self.deadline_min {
+            return; // evaluate only once, at the deadline
+        }
         let cond_range = self.hi - self.lo > self.range_pts;
         let cond_vol = match self.vol.as_mut() {
             None => true,
-            Some(v) => match v.at(end) {
-                (Some(today), Some(prev)) if prev > 0.0 => today > self.vol_ratio * prev,
-                _ => false,
-            },
+            Some(v) => {
+                let (today, prev) = v.at(end);
+                let prev_ok = v.prev_day_for(self.session_day) == Some(self.prev_session_day);
+                match (today, prev) {
+                    (Some(t), Some(p)) if prev_ok && p > 0.0 => t > self.vol_ratio * p,
+                    _ => {
+                        // no turnover data for today or for the previous trading day:
+                        // skip the day rather than compare against the wrong session
+                        if minute_of_day(end) >= self.deadline_min {
+                            self.missing_vol_days += 1;
+                        }
+                        false
+                    }
+                }
+            }
         };
         if cond_range && cond_vol && ctx.is_flat() {
             let br = Bracket {
