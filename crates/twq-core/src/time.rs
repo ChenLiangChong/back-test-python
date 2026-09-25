@@ -141,7 +141,16 @@ pub fn parse_datetime(s: &str) -> Option<Ts> {
             _ => None,
         };
     }
-    let (y, mo, d, rest) = if b.len() >= 10 && (b[4] == b'-' || b[4] == b'/') {
+    let padded = b.len() >= 10
+        && (b[4] == b'-' || b[4] == b'/')
+        && (b[7] == b'-' || b[7] == b'/')
+        && b[8].is_ascii_digit()
+        && b[9].is_ascii_digit()
+        && (b.len() == 10 || b[10] == b' ' || b[10] == b'T');
+    if !padded && b.len() > 4 && (b[4] == b'-' || b[4] == b'/') {
+        return parse_unpadded(s.trim());
+    }
+    let (y, mo, d, rest) = if padded {
         (digits(&b[0..4])?, digits(&b[5..7])?, digits(&b[8..10])?, &b[10..])
     } else if b.len() >= 8 {
         (digits(&b[0..4])?, digits(&b[4..6])?, digits(&b[6..8])?, &b[8..])
@@ -182,6 +191,35 @@ pub fn parse_datetime(s: &str) -> Option<Ts> {
         return None;
     }
     Some(make_ts(y as i64, mo, d, h, mi, sec, us))
+}
+
+/// Slow path for dates without zero padding, e.g. `1998/7/22 9:01:00`.
+fn parse_unpadded(s: &str) -> Option<Ts> {
+    let (date, time) = match s.find([' ', 'T']) {
+        Some(i) => (&s[..i], s[i + 1..].trim()),
+        None => (s, ""),
+    };
+    let mut dp = date.split(['-', '/']);
+    let (y, mo, d) =
+        (dp.next()?.parse::<i64>().ok()?, dp.next()?.parse::<u32>().ok()?, dp.next()?.parse::<u32>().ok()?);
+    let (mut h, mut mi, mut sec, mut us) = (0u32, 0u32, 0u32, 0u32);
+    if !time.is_empty() {
+        let mut tp = time.split(':');
+        h = tp.next()?.parse().ok()?;
+        mi = tp.next().unwrap_or("0").parse().ok()?;
+        if let Some(sp) = tp.next() {
+            let (whole, frac) = sp.split_once('.').unwrap_or((sp, ""));
+            sec = whole.parse().ok()?;
+            if !frac.is_empty() {
+                let n = frac.len().min(6);
+                us = frac[..n].parse::<u32>().ok()? * 10u32.pow(6 - n as u32);
+            }
+        }
+    }
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    Some(make_ts(y, mo, d, h, mi, sec, us))
 }
 
 /// `YYYY-MM-DD HH:MM:SS` (plus `.ffffff` when there are sub-second parts).
@@ -245,6 +283,10 @@ mod tests {
         assert_eq!(parse_datetime("20240102084500"), Some(t));
         assert_eq!(parse_datetime("2024-01-02T08:45:00.5"), Some(t + 500_000));
         assert_eq!(parse_datetime("2024-13-02 08:45:00"), None);
+        assert_eq!(parse_datetime("2024/1/2 8:45:00"), Some(t));
+        assert_eq!(parse_datetime("1998/7/22 09:01:00"), Some(make_ts(1998, 7, 22, 9, 1, 0, 0)));
+        assert_eq!(parse_datetime("1998/10/1 09:01:00"), Some(make_ts(1998, 10, 1, 9, 1, 0, 0)));
+        assert_eq!(parse_datetime("1998/10/1"), Some(make_ts(1998, 10, 1, 0, 0, 0, 0)));
         assert_eq!(fmt_ts(t), "2024-01-02 08:45:00");
     }
 

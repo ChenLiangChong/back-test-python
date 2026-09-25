@@ -261,6 +261,16 @@ enum DataCmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// 合併多個 K 棒檔 (可用萬用字元), 依時間排序去重, 可平移時間
+    /// (例: MultiCharts / XQ 匯出的 K 棒標的是結束時間, 用 --shift-sec -60 轉成開始時間)
+    Merge {
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        shift_sec: i64,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// 顯示資料摘要
     Info {
         path: PathBuf,
@@ -665,6 +675,30 @@ fn cmd_data(c: DataCmd) -> Result<()> {
             }
             data::save_bars(&out, &b)?;
             println!("{} 根 K 棒 -> {}", b.len(), out.display());
+        }
+        DataCmd::Merge { inputs, shift_sec, out } => {
+            let mut all: Vec<Bar> = Vec::new();
+            for p in &expand_globs(&inputs)? {
+                let b = data::load_bars(p)?;
+                eprintln!("{}: {} 根", p.display(), b.len());
+                all.extend(b);
+            }
+            for b in &mut all {
+                b.ts += shift_sec * US_PER_SEC;
+            }
+            all.sort_by_key(|b| b.ts);
+            // on overlaps keep the bar from the later file
+            let mut merged: Vec<Bar> = Vec::with_capacity(all.len());
+            for b in all {
+                match merged.last_mut() {
+                    Some(last) if last.ts == b.ts => *last = b,
+                    _ => merged.push(b),
+                }
+            }
+            data::save_bars(&out, &merged)?;
+            if let (Some(a), Some(z)) = (merged.first(), merged.last()) {
+                println!("{} 根 K 棒 ({} ~ {}) -> {}", merged.len(), fmt_ts(a.ts), fmt_ts(z.ts), out.display());
+            }
         }
         DataCmd::Info { path, ticks } => {
             if ticks {

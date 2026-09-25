@@ -9,3 +9,8 @@ bridge/config.ini
 bridge/logs/
 __pycache__/
 *.pyc
+# downloaded market data (large / third-party)
+/data/community/
+/data/taifex/
+/data/twse_mi5mins/
+/data/taiex_*.csv
