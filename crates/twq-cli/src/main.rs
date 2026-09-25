@@ -98,10 +98,55 @@ struct DataArgs {
     to: Option<String>,
 }
 
+#[derive(Args, Clone, Default)]
+struct InputArgs {
+    /// 事件行事曆 CSV, 可重複: datetime,name,tier(big/normal),tz(TW/ET)
+    #[arg(long)]
+    events: Vec<PathBuf>,
+    /// 依規則自動加入 MSCI(2/5/8/11月最後交易日) 與富時(3/6/9/12月第三個週五) 13:25 事件, 例: 2024-2026
+    #[arg(long)]
+    index_events: Option<String>,
+    /// 輔助資料 name=path, 可重複. 例: taiex_vol=data/taiex_cumamt.csv (大盤累積成交)
+    #[arg(long)]
+    series: Vec<String>,
+}
+
+impl InputArgs {
+    fn load(&self) -> Result<twq_strategies::Inputs> {
+        let mut events = Vec::new();
+        for p in &self.events {
+            events.extend(twq_core::events::load_events(p)?);
+        }
+        if let Some(r) = &self.index_events {
+            let (a, b) = r.split_once('-').unwrap_or((r.as_str(), r.as_str()));
+            let (a, b): (i64, i64) = (a.trim().parse()?, b.trim().parse()?);
+            events.extend(twq_core::events::index_review_events(a, b, 1325));
+        }
+        events.sort_by_key(|e| e.ts);
+        events.dedup_by(|x, y| x.ts == y.ts && x.name == y.name);
+        let mut series = std::collections::HashMap::new();
+        for spec in &self.series {
+            let (name, path) = spec.split_once('=').ok_or_else(|| anyhow!("--series expects name=path, got {spec}"))?;
+            series.insert(name.trim().to_string(), std::sync::Arc::new(twq_core::events::load_series(path.trim())?));
+        }
+        if !events.is_empty() {
+            eprintln!(
+                "事件行事曆: {} 筆 ({} ~ {})",
+                events.len(),
+                fmt_ts(events[0].ts),
+                fmt_ts(events.last().unwrap().ts)
+            );
+        }
+        Ok(twq_strategies::Inputs { events: std::sync::Arc::new(events), series })
+    }
+}
+
 #[derive(Args)]
 struct BacktestArgs {
     #[command(flatten)]
     data: DataArgs,
+    #[command(flatten)]
+    inputs: InputArgs,
     #[command(flatten)]
     market: MarketArgs,
     #[arg(long, short)]
@@ -121,6 +166,8 @@ struct BacktestArgs {
 struct OptimizeArgs {
     #[command(flatten)]
     data: DataArgs,
+    #[command(flatten)]
+    inputs: InputArgs,
     #[command(flatten)]
     market: MarketArgs,
     #[arg(long, short)]
@@ -201,9 +248,9 @@ enum DataCmd {
         bars_tf: Option<String>,
         #[arg(long)]
         bars_out: Option<PathBuf>,
-        /// 若檔案中夜盤 (>=15:00) 成交的日期標的是「交易日」而非日曆日, 加此旗標把它們移回前一天
-        #[arg(long)]
-        night_prev_day: bool,
+        /// 夜盤成交的日期標法: auto (自動判斷) / trading (標交易日, 期交所慣例) / calendar (標日曆日)
+        #[arg(long, default_value = "auto")]
+        night_dates: String,
     },
     /// K 棒重新取樣 / 格式轉換 (csv <-> bin)
     Resample {
@@ -252,6 +299,8 @@ struct LiveArgs {
     strategy: String,
     #[arg(long, short, default_value = "")]
     params: String,
+    #[command(flatten)]
+    inputs: InputArgs,
     /// 報價代碼 (群益近月台指: TX00)
     #[arg(long, default_value = "TX00")]
     symbol: String,
@@ -399,9 +448,42 @@ fn write_outputs(out: &Path, title: &str, sub: &str, r: &BacktestResult) -> Resu
     Ok(())
 }
 
+/// Per-tag breakdown (event name / entry signal) of a trade list.
+fn print_tag_breakdown(trades: &[twq_core::Trade]) {
+    let mut tags: Vec<&str> = trades.iter().map(|t| t.entry_tag).collect();
+    tags.sort_unstable();
+    tags.dedup();
+    if tags.len() < 2 && trades.len() < 2 {
+        return;
+    }
+    println!(
+        "  {:<14} {:>6} {:>7} {:>12} {:>10}   出場 (停利/停損/其他)",
+        "進場標籤", "筆數", "勝率", "淨損益", "平均"
+    );
+    for tag in tags {
+        let ts: Vec<_> = trades.iter().filter(|t| t.entry_tag == tag).collect();
+        let net: f64 = ts.iter().map(|t| t.net_pnl).sum();
+        let wins = ts.iter().filter(|t| t.net_pnl > 0.0).count();
+        let tp = ts.iter().filter(|t| t.exit_tag == "tp").count();
+        let sl = ts.iter().filter(|t| t.exit_tag == "sl").count();
+        println!(
+            "  {:<14} {:>6} {:>6.1}% {:>12.0} {:>10.0}   {}/{}/{}",
+            tag,
+            ts.len(),
+            wins as f64 / ts.len() as f64 * 100.0,
+            net,
+            net / ts.len() as f64,
+            tp,
+            sl,
+            ts.len() - tp - sl
+        );
+    }
+}
+
 fn cmd_backtest(a: BacktestArgs) -> Result<()> {
     let params = Params::parse(&a.params)?;
-    let mut strat = twq_strategies::build(&a.strategy, &params)?;
+    let inputs = a.inputs.load()?;
+    let mut strat = twq_strategies::build_with(&a.strategy, &params, &inputs)?;
     let mut cfg = a.market.config()?;
     let r = match load(&a.data)? {
         Loaded::Bars(bars, period) => {
@@ -417,6 +499,7 @@ fn cmd_backtest(a: BacktestArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&r.stats)?);
     } else {
         print_result(&a.strategy, &params, &r);
+        print_tag_breakdown(&r.trades);
     }
     if let Some(out) = &a.out {
         let sub =
@@ -431,11 +514,12 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
         rayon::ThreadPoolBuilder::new().num_threads(n).build_global().ok();
     }
     let base = Params::parse(&a.params)?;
-    twq_strategies::build(&a.strategy, &base)?; // validate names early
+    let inputs = a.inputs.load()?;
+    twq_strategies::build_with(&a.strategy, &base, &inputs)?; // validate names early
     let grid = ParamGrid::parse(&a.grid)?;
     let combos = grid.combos(&base);
     for c in combos.iter().take(1) {
-        twq_strategies::build(&a.strategy, c)?;
+        twq_strategies::build_with(&a.strategy, c, &inputs)?;
     }
     let objective = Objective::parse(&a.objective)?;
     let mut cfg = a.market.config()?;
@@ -444,7 +528,8 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     };
     cfg.bar_period = period;
     let name = a.strategy.clone();
-    let build = move |p: &Params| twq_strategies::build(&name, p);
+    let inp = inputs.clone();
+    let build = move |p: &Params| twq_strategies::build_with(&name, p, &inp);
     let t0 = Instant::now();
     let rows = grid_search(&bars, &combos, &cfg, &build, objective, a.min_trades);
     let el = t0.elapsed().as_secs_f64();
@@ -483,7 +568,7 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     }
     if a.wf > 0 {
         let name = a.strategy.clone();
-        let build = move |p: &Params| twq_strategies::build(&name, p);
+        let build = move |p: &Params| twq_strategies::build_with(&name, p, &inputs);
         let opts = WalkForwardOpts { objective, folds: a.wf, min_trades: a.min_trades, warmup_bars: a.warmup };
         let wf = walk_forward(&bars, &combos, &cfg, &build, opts)?;
         println!("\n== Walk-forward ({} 折, 錨定式; 每折用之前全部資料最佳化, 下一段樣本外交易) ==", a.wf);
@@ -539,7 +624,7 @@ fn cmd_data(c: DataCmd) -> Result<()> {
             data::save_ticks(&out, &t)?;
             println!("產生 {} 筆 tick -> {}", t.len(), out.display());
         }
-        DataCmd::Taifex { inputs, product, expiry, out, bars_tf, bars_out, night_prev_day } => {
+        DataCmd::Taifex { inputs, product, expiry, out, bars_tf, bars_out, night_dates } => {
             let mut all = Vec::new();
             for p in &expand_globs(&inputs)? {
                 let bytes = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
@@ -547,14 +632,21 @@ fn cmd_data(c: DataCmd) -> Result<()> {
                 eprintln!("{}: {} ticks", p.display(), t.len());
                 all.extend(t);
             }
-            if night_prev_day {
-                for t in &mut all {
-                    if twq_core::time::minute_of_day(t.ts) >= 15 * 60 {
-                        t.ts -= US_PER_DAY;
-                    }
-                }
-            }
             all.sort_by_key(|t| t.ts);
+            let mode = match night_dates.as_str() {
+                "auto" => data::NightDates::Auto,
+                "trading" => data::NightDates::TradingDate,
+                "calendar" => data::NightDates::Calendar,
+                m => bail!("--night-dates must be auto|trading|calendar, got {m}"),
+            };
+            let applied = data::fix_taifex_night_dates(&mut all, mode);
+            eprintln!(
+                "夜盤日期: {}",
+                match applied {
+                    data::NightDates::TradingDate => "檔案標的是交易日 → 已把夜盤成交移回實際日期",
+                    _ => "檔案標的已是日曆日 → 不調整",
+                }
+            );
             data::save_ticks(&out, &all)?;
             println!("{} {} 筆 tick -> {}", product, all.len(), out.display());
             if let Some(bo) = bars_out {
@@ -686,7 +778,8 @@ fn cmd_live(a: LiveArgs) -> Result<()> {
         m => bail!("unknown --mode {m} (paper|live)"),
     };
     let params = Params::parse(&a.params)?;
-    let mut strat = twq_strategies::build(&a.strategy, &params)?;
+    let inputs = a.inputs.load()?;
+    let mut strat = twq_strategies::build_with(&a.strategy, &params, &inputs)?;
     let mut cfg = LiveConfig::new(a.market.instrument()?, &a.symbol, mode);
     cfg.order_symbol = a.order_symbol.clone().unwrap_or_else(|| a.symbol.clone());
     cfg.bar_period = parse_tf(&a.tf)?;

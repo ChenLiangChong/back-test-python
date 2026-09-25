@@ -19,6 +19,47 @@
 > 請務必先用 `--mode paper`、群益測試環境（`test_env = true`）和 `allow_orders = false` 驗證。
 > 內建策略（包含馬克羊啟發的策略）都**不是**已證實的獲利策略，只是可以回測的假設。自動交易有虧損風險，後果請自行負責。
 
+## 你的策略：事件盤夾子 + 破 day low ORB（Mac 可直接回測）
+
+**一鍵執行**（Mac / Linux，需要先裝 Rust：`curl https://sh.rustup.rs -sSf | sh`）：
+```bash
+./scripts/backtest_my_strategies.sh
+```
+這個腳本會依序：
+1. 編譯程式。
+2. 下載**免費官方資料**：期交所最近 30 個交易日的逐筆成交，加上證交所每 5 秒的大盤成交統計。
+3. 匯入資料，並自動校正夜盤日期。
+4. 回測兩個策略，產生 `reports/*/report.html` 並自動開啟。
+
+| 策略 | 規則（照你給的） | 我先補上的假設（都可以改參數） |
+|---|---|---|
+| `event_clip` 事件盤夾子 | 公布前在最新價上下 ±20 點掛觸價單（OCO，二選一），停損 40<br>**大事件**停利 150：非農+失業率、FOMC、CPI<br>**一般事件**停利 100：JOLTS、PPI、MSCI 13:25、富時 13:25、台積電營收 13:30 | 公布後 5 分鐘沒觸發就取消（`cancel_min`）<br>持倉只看停損停利，收盤前平倉（`max_hold_min=0`） |
+| `orb_daylow` 破 day low | 9:30 前日盤台指期高低差 > 100 點，且 9:30 前加權指數成交 > 昨量 × 0.3<br>兩個條件都達標後，掛「日盤最低點 − 1」觸價空單 | 停損 40（沿用事件盤）、不設停利、13:40 平倉（`sl` / `tp` / `exit_hhmm`）<br>「成交量」預設用**成交金額**，要改成股數請用 `taiex_cumvol.csv` |
+
+事件日期放在 [`data/events/events.csv`](data/events/events.csv)，可以用台灣時間或美東時間填寫，程式會自動換算時區和夏令時間。
+2026 年 8～9 月的日期已經核對過；要回測更早的期間，就自己在這個檔案裡補上日期。
+
+手動執行的方式：
+```bash
+python3 tools/fetch_data.py                     # 下載資料 (期交所 30 天 + 證交所大盤成交)
+./target/release/twq data taifex "data/taifex/Daily_*.csv" --product TX --out data/tx_ticks.bin --bars-tf 1m --bars-out data/tx_1m.bin
+./target/release/twq backtest --data data/tx_ticks.bin --ticks -s event_clip --events data/events/events.csv --out reports/event_clip
+./target/release/twq backtest --data data/tx_ticks.bin --ticks -s orb_daylow --series taiex_vol=data/taiex_cumamt.csv --out reports/orb_daylow
+# 調參數，例如停損改 30、只做大事件:
+./target/release/twq backtest --data data/tx_ticks.bin --ticks -s event_clip --events data/events/events.csv -p "sl=30,tier=1"
+# 平行最佳化:
+./target/release/twq optimize --data data/tx_1m.bin -s event_clip --events data/events/events.csv --grid clip=10:30:5 --grid sl=20:60:10 --min-trades 3
+```
+
+> 期交所免費資料只保留最近 30 個交易日，大約涵蓋 10 個事件，**樣本很少**，只能當作初步驗證。
+> 要回測好幾年，需要更長的逐筆或 1 分 K 資料。可以向期交所申請付費歷史資料，或在 Windows 上用群益 API 下載歷史 K 線；證交所的大盤成交可以用 `--twse-from 2020-01-01` 往回抓好幾年。
+
+**Mac 上跑實盤**：回測完全在 Mac 上跑。群益 API 只能在 Windows 上用，所以要實盤的話，需要以下其中一種：
+- Mac 裝 Parallels 跑 Windows。
+- 租一台 Windows 雲端主機（夜盤要跑到凌晨 5 點，比較推薦這個）。
+
+bridge 跑在 Windows 上，`twq` 可以跑在同一台 Windows，也可以透過網路從 Mac 連過去（bridge 設定 `listen_host = 0.0.0.0`）。
+
 ## 有多快？
 
 實測環境：雲端 4 vCPU（Intel Xeon 2.8GHz）VM，`twq bench`，模擬資料為 500 萬根台指期 1 分 K（約 17 年日夜盤）
@@ -70,7 +111,7 @@ cargo build --release          # 產出 target/release/twq (Windows: twq.exe)
   `twq data taifex Daily_2026_09_*.csv --product TX --out data/tx_ticks.bin --bars-tf 1m --bars-out data/tx_1m.bin`
   程式會自動處理 Big5 表頭、時間欄位省略開頭 0（`84500`）、成交量 B+S 除以 2、排除價差單，並自動挑選近月合約。
   萬用字元由程式自己展開，Windows PowerShell 也能用。期交所下載的是 zip 檔，請先解壓縮。
-  如果發現夜盤成交的日期被標成「交易日」（晚上的成交跑到隔天），加上 `--night-prev-day` 修正。
+  期交所把夜盤成交標在「交易日」（例如 7/3 15:00–7/4 05:00 標成 7/4），匯入時會自動偵測並移回實際日期（`--night-dates auto|trading|calendar`）。
 - 一般 K 棒 CSV：`timestamp,open,high,low,close,volume`，也接受 `Date,Time,...` 或中文欄名（`日期,開盤價,...`）。
 - `data/sample/NQ_1min_sample.csv` 是原 repo 附的 NQ 範例資料：`twq backtest --data data/sample/NQ_1min_sample.csv --instrument NQ -s orb -p "open_hhmm=930,session_end=1600,exit_hhmm=1555"`
 
@@ -96,6 +137,8 @@ cargo build --release          # 產出 target/release/twq (Windows: twq.exe)
 | `bb_revert` | 布林通道均值回歸 + KD 濾網，中軌停利 | 經典 |
 | `vol_breakdown` | **爆量紅K低點 −1 tick 跌破放空，停損紅K**（預設只做夜盤） | 馬克羊〈夜盤當沖交易手法公開〉說明欄 |
 | `tail_flow` | 13:30 當沖強制平倉的順勢單（盤中趨勢 ≥150 點時跟單，13:44 出場） | 馬克羊 2026-02 群益講座（第三方筆記） |
+| `event_clip` | **你的事件盤夾子**（見上方） | 使用者 |
+| `orb_daylow` | **你的破 day low ORB**（見上方） | 使用者 |
 | 任何策略 + `max_daily_loss=N` | 「計程車司機法則」：當日虧損達 N 元就全部平倉，當天停止交易 | 馬克羊講座 |
 
 馬克羊（楊震醫師）的研究整理、每條規則的出處，以及哪些部分是我自行補上的參數，都寫在 [`docs/RESEARCH.md`](docs/RESEARCH.md#5-馬克羊-楊震-交易方法研究)。
@@ -165,7 +208,7 @@ docs/ARCHITECTURE.md 架構與延遲設計、bridge 協定規格
 data/sample/       原 repo 的 NQ 範例資料
 ```
 
-測試：`cargo test --release`，共 44 個測試，涵蓋以下項目：
+測試：`cargo test --release`，共 54 個測試，涵蓋以下項目：
 - 指標和樸素實作的比對
 - 撮合路徑
 - 手續費和稅

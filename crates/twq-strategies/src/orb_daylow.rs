@@ -1,0 +1,125 @@
+//! 使用者的 ORB: 破日盤 day low 放空.
+//!
+//! 1. 9:30 前, 日盤台指期 (08:45 起) 最高 − 最低 > `range_pts` (100 點)
+//! 2. 9:30 前, 加權指數累積成交 > 昨日全天成交 × `vol_ratio` (0.3 倍)
+//!
+//! 兩個條件都達標後, 在「日盤最低點 − `offset` (1 點)」掛觸價空單, 破 day low 自動進場.
+//! 出場規則使用者尚未指定, 以參數表示 (預設: 停損 40 點, 不設停利, 13:40 平倉).
+//!
+//! 條件 2 需要大盤累積成交資料: `--series taiex_vol=<csv>` (timestamp,累積成交金額或量),
+//! 由 `tools/fetch_data.py` 從證交所「每5秒委託成交統計」下載.
+
+use std::sync::Arc;
+
+use twq_core::events::{CumulativeDaily, Series};
+use twq_core::time::{hhmm, hhmm_to_min, minute_of_day};
+use twq_core::{Bar, Bracket, Ctx, OrderKind, Params, Side, Strategy, Tif};
+
+use crate::common::DayTracker;
+
+pub struct OrbDayLow {
+    range_pts: f64,
+    vol_ratio: f64,
+    deadline_min: u32,
+    offset: f64,
+    sl: f64,
+    tp: f64,
+    exit_hhmm: u32,
+    qty: i64,
+    vol: Option<CumulativeDaily>,
+    days: DayTracker,
+    hi: f64,
+    lo: f64,
+    armed: bool,
+    done: bool,
+    /// Days on which both conditions were met (for diagnostics).
+    pub signal_days: u32,
+}
+
+impl OrbDayLow {
+    pub const PARAMS: &'static [(&'static str, f64, &'static str)] = &[
+        ("range_pts", 100.0, "條件1: 9:30 前日盤高低差 > N 點"),
+        ("vol_ratio", 0.3, "條件2: 9:30 前大盤累積成交 > 昨量 × N"),
+        ("use_vol", 1.0, "1 = 使用條件2 (需 --series taiex_vol=...), 0 = 只看條件1"),
+        ("deadline", 930.0, "條件須在此時間前達成 (hhmm)"),
+        ("offset", 1.0, "觸價空單 = day low − N 點"),
+        ("sl", 40.0, "停損 (點) — 使用者未指定, 暫用事件盤的 40"),
+        ("tp", 0.0, "停利 (點), 0 = 不設"),
+        ("exit_hhmm", 1340.0, "強制平倉時間"),
+        ("qty", 1.0, "口數"),
+    ];
+
+    pub fn new(p: &Params, vol: Option<Arc<Series>>) -> Self {
+        Self {
+            range_pts: p.get("range_pts", 100.0),
+            vol_ratio: p.get("vol_ratio", 0.3),
+            deadline_min: hhmm_to_min(p.get("deadline", 930.0) as u32),
+            offset: p.get("offset", 1.0),
+            sl: p.get("sl", 40.0),
+            tp: p.get("tp", 0.0),
+            exit_hhmm: p.get("exit_hhmm", 1340.0) as u32,
+            qty: p.get("qty", 1.0) as i64,
+            vol: vol.map(CumulativeDaily::new),
+            days: DayTracker::calendar(),
+            hi: f64::MIN,
+            lo: f64::MAX,
+            armed: false,
+            done: false,
+            signal_days: 0,
+        }
+    }
+}
+
+impl Strategy for OrbDayLow {
+    fn on_bar(&mut self, bar: &Bar, ctx: &mut Ctx) {
+        let m = minute_of_day(bar.ts);
+        if !(hhmm_to_min(845)..hhmm_to_min(1345)).contains(&m) {
+            return; // day session only
+        }
+        if self.days.is_new_day(bar.ts) {
+            self.hi = f64::MIN;
+            self.lo = f64::MAX;
+            self.armed = false;
+            self.done = false;
+            if !ctx.is_flat() || ctx.has_working_orders() {
+                ctx.flatten();
+            }
+        }
+        self.hi = self.hi.max(bar.high);
+        self.lo = self.lo.min(bar.low);
+        let end = ctx.bar_end(bar);
+        if hhmm(end) >= self.exit_hhmm {
+            if !ctx.is_flat() || ctx.has_working_orders() {
+                ctx.flatten();
+            }
+            self.done = true;
+            return;
+        }
+        if self.armed || self.done {
+            return;
+        }
+        if minute_of_day(end) > self.deadline_min {
+            self.done = true; // conditions not met before the deadline
+            return;
+        }
+        let cond_range = self.hi - self.lo > self.range_pts;
+        let cond_vol = match self.vol.as_mut() {
+            None => true,
+            Some(v) => match v.at(end) {
+                (Some(today), Some(prev)) if prev > 0.0 => today > self.vol_ratio * prev,
+                _ => false,
+            },
+        };
+        if cond_range && cond_vol && ctx.is_flat() {
+            let br = Bracket {
+                stop_dist: (self.sl > 0.0).then_some(self.sl),
+                take_dist: (self.tp > 0.0).then_some(self.tp),
+            };
+            let id =
+                ctx.submit(Side::Sell, self.qty, OrderKind::Stop(self.lo - self.offset), Tif::Rod, 0, "orb_daylow");
+            ctx.attach_bracket(id, br);
+            self.armed = true;
+            self.signal_days += 1;
+        }
+    }
+}

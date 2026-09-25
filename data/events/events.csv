@@ -1,0 +1,26 @@
+# 事件行事曆 — 給 event_clip (事件盤夾子) 使用
+# 欄位: datetime,name,tier,tz,source
+#   tier: big = 大事件 (停利 150: 非農/失業率, FOMC, CPI) / normal = 一般事件 (停利 100)
+#   tz:   TW = 台灣時間 / ET = 美東時間 (程式會自動換算並處理夏令時間)
+# 以下日期於 2026-09 以網路搜尋核對 (來源見最後一欄); 要回測更早的期間請自行補上.
+# MSCI / 富時調整日也可以用 --index-events 2024-2026 依規則自動產生 (未處理國定假日, 請核對).
+datetime,name,tier,tz,source
+2026-01-28 14:00,FOMC,big,ET,Fed 2026 calendar
+2026-03-18 14:00,FOMC,big,ET,Fed 2026 calendar
+2026-04-29 14:00,FOMC,big,ET,Fed 2026 calendar
+2026-06-17 14:00,FOMC,big,ET,Fed 2026 calendar
+2026-07-29 14:00,FOMC,big,ET,Fed 2026 calendar
+2026-08-10 13:30,TSMC_REV,normal,TW,台積電7月營收 8/10 公布
+2026-08-12 20:30,CPI,big,TW,美國7月CPI
+2026-08-13 20:30,PPI,normal,TW,美國7月PPI
+2026-08-31 13:25,MSCI,normal,TW,MSCI 8月季度調整 8/31 收盤生效
+2026-09-01 10:00,JOLTS,normal,ET,BLS JOLTS
+2026-09-04 08:30,NFP,big,ET,BLS 8月就業報告 (非農+失業率)
+2026-09-10 13:30,TSMC_REV,normal,TW,台積電8月營收 9/10 公布
+2026-09-10 08:30,PPI,normal,ET,美國8月PPI
+2026-09-11 08:30,CPI,big,ET,美國8月CPI
+2026-09-16 14:00,FOMC,big,ET,Fed 2026 calendar (台灣時間 9/17 02:00)
+2026-09-18 13:25,FTSE,normal,TW,富時 9月季度調整 9/18 收盤生效
+2026-10-02 08:30,NFP,big,ET,BLS 9月就業報告 (排程)
+2026-10-28 14:00,FOMC,big,ET,Fed 2026 calendar
+2026-12-09 14:00,FOMC,big,ET,Fed 2026 calendar

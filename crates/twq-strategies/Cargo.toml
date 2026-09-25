@@ -8,3 +8,6 @@ description = "Strategies shared by backtest and live trading"
 [dependencies]
 twq-core.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+twq-backtest.workspace = true

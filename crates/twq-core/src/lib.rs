@@ -3,6 +3,7 @@
 
 pub mod aggregator;
 pub mod data;
+pub mod events;
 pub mod indicators;
 pub mod instrument;
 pub mod portfolio;

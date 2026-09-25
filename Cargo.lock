@@ -322,6 +322,7 @@ name = "twq-strategies"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "twq-backtest",
  "twq-core",
 ]
 

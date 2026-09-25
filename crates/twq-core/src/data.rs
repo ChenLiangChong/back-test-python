@@ -327,6 +327,93 @@ pub fn parse_taifex_ticks(bytes: &[u8], product: &str, expiry: Option<&str>) -> 
     Ok(ticks)
 }
 
+/// How the 成交日期 column labels after-hours (night session) trades.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NightDates {
+    /// Detect from price continuity (default).
+    Auto,
+    /// Night trades carry the *trading day* they are attributed to (TAIFEX convention:
+    /// 7/3 15:00 – 7/4 05:00 is reported as 7/4) and must be moved back.
+    TradingDate,
+    /// Night trades already carry their calendar date.
+    Calendar,
+}
+
+/// Put TAIFEX night-session ticks on their real calendar timestamps.
+///
+/// Under trading-date labelling a trade stamped `L 15:30` really happened on the
+/// previous trading day `P` at 15:30, and one stamped `L 02:00` on `P + 1` at 02:00.
+/// `Auto` votes per day: the first night trade labelled `L` is compared with the
+/// day-session close of `L` and of `P`; it sits next to whichever it really follows.
+/// Returns the mode that was applied.
+pub fn fix_taifex_night_dates(ticks: &mut [Tick], mode: NightDates) -> NightDates {
+    use crate::time::{day_of, time_of_day, US_PER_HOUR, US_PER_MIN};
+    use std::collections::{BTreeMap, HashMap};
+    let day_start = 8 * US_PER_HOUR + 45 * US_PER_MIN;
+    let day_end = 13 * US_PER_HOUR + 45 * US_PER_MIN;
+    let eve = 15 * US_PER_HOUR;
+    let early_end = 6 * US_PER_HOUR;
+    let mut day_close: BTreeMap<i64, f64> = BTreeMap::new();
+    let mut first_eve: HashMap<i64, (Ts, f64)> = HashMap::new();
+    for t in ticks.iter() {
+        let (d, tod) = (day_of(t.ts), time_of_day(t.ts));
+        if (day_start..=day_end).contains(&tod) {
+            day_close.insert(d, t.price);
+        } else if tod >= eve {
+            let e = first_eve.entry(d).or_insert((t.ts, t.price));
+            if t.ts < e.0 {
+                *e = (t.ts, t.price);
+            }
+        }
+    }
+    let prev_of = |d: i64| -> i64 {
+        match day_close.range(..d).next_back() {
+            Some((&p, _)) => p,
+            None => {
+                let mut p = d - 1;
+                while crate::time::weekday(p * US_PER_DAY) >= 5 {
+                    p -= 1;
+                }
+                p
+            }
+        }
+    };
+    let mode = match mode {
+        NightDates::Auto => {
+            let (mut trading, mut calendar) = (0, 0);
+            for (&d, &(_, p15)) in &first_eve {
+                let (Some(&c_l), Some((_, &c_p))) = (day_close.get(&d), day_close.range(..d).next_back()) else {
+                    continue;
+                };
+                let (a, b) = ((p15 - c_p).abs(), (p15 - c_l).abs());
+                if a < b {
+                    trading += 1;
+                } else if b < a {
+                    calendar += 1;
+                }
+            }
+            if calendar > trading {
+                NightDates::Calendar
+            } else {
+                NightDates::TradingDate
+            }
+        }
+        m => m,
+    };
+    if mode == NightDates::TradingDate {
+        for t in ticks.iter_mut() {
+            let (d, tod) = (day_of(t.ts), time_of_day(t.ts));
+            if tod >= eve {
+                t.ts = prev_of(d) * US_PER_DAY + tod;
+            } else if tod < early_end {
+                t.ts = (prev_of(d) + 1) * US_PER_DAY + tod;
+            }
+        }
+        ticks.sort_by_key(|t| t.ts);
+    }
+    mode
+}
+
 // ---------------------------------------------------------------- synthetic data
 
 /// Parameters for the synthetic TAIFEX-like 1-minute generator.
@@ -493,6 +580,49 @@ mod tests {
         assert_eq!(t[0].qty, 12.0);
         let t2 = parse_taifex_ticks(s.as_bytes(), "TX", Some("202402")).unwrap();
         assert_eq!(t2.len(), 1);
+    }
+
+    #[test]
+    fn night_dates_trading_labels_are_moved_back() {
+        // Friday 2026-09-04 day session closes 20000; the night session Fri 15:00 → Sat 05:00
+        // is labelled Monday 2026-09-07 (trading-date convention), Monday's day session 20300.
+        let fri = |h, m| make_ts(2026, 9, 4, h, m, 0, 0);
+        let mon = |h, m| make_ts(2026, 9, 7, h, m, 0, 0);
+        let mut ticks = vec![
+            Tick::trade(fri(9, 0), 19990.0, 1.0),
+            Tick::trade(fri(13, 44), 20000.0, 1.0),
+            Tick::trade(mon(2, 0), 20250.0, 1.0), // really Sat 02:00
+            Tick::trade(mon(9, 0), 20290.0, 1.0),
+            Tick::trade(mon(13, 44), 20300.0, 1.0),
+            Tick::trade(mon(15, 0), 20005.0, 1.0), // really Fri 15:00 (next to Friday's close)
+            Tick::trade(mon(20, 30), 20100.0, 1.0), // really Fri 20:30
+        ];
+        assert_eq!(fix_taifex_night_dates(&mut ticks, NightDates::Auto), NightDates::TradingDate);
+        let ts: Vec<_> = ticks.iter().map(|t| t.ts).collect();
+        assert_eq!(
+            ts,
+            vec![
+                fri(9, 0),
+                fri(13, 44),
+                fri(15, 0),
+                fri(20, 30),
+                make_ts(2026, 9, 5, 2, 0, 0, 0),
+                mon(9, 0),
+                mon(13, 44)
+            ]
+        );
+        // calendar-labelled data is left alone
+        let mut cal = vec![
+            Tick::trade(fri(13, 44), 20000.0, 1.0),
+            Tick::trade(fri(15, 0), 20005.0, 1.0),
+            Tick::trade(mon(9, 0), 20290.0, 1.0),
+            Tick::trade(mon(13, 44), 20300.0, 1.0),
+            Tick::trade(mon(15, 0), 20302.0, 1.0),
+        ];
+        let key = |v: &[Tick]| v.iter().map(|t| (t.ts, t.price)).collect::<Vec<_>>();
+        let before = key(&cal);
+        assert_eq!(fix_taifex_night_dates(&mut cal, NightDates::Auto), NightDates::Calendar);
+        assert_eq!(key(&cal), before);
     }
 
     #[test]
