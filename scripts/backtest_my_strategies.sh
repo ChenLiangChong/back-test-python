@@ -12,15 +12,18 @@ TWQ=./target/release/twq
 
 python3 tools/fetch_data.py --out data "$@"
 
-$TWQ data taifex "data/taifex/Daily_*.csv" --product TX \
-  --out data/tx_ticks.bin --bars-tf 1m --bars-out data/tx_1m.bin
+# 使用者做小台 (MTX) 1 口
+$TWQ data taifex "data/taifex/Daily_*.csv" --product MTX \
+  --out data/mtx_ticks.bin --bars-tf 1m --bars-out data/mtx_1m.bin
+YEAR=$(date +%Y)
+EVENTS="--events data/events/fomc.csv --events data/events/us_macro.csv --events data/events/tsmc_revenue.csv --index-events $YEAR-$YEAR"
 
-echo; echo "===== 事件盤夾子 (±20, 停損 40, 大事件停利 150 / 一般 100) ====="
-$TWQ backtest --data data/tx_ticks.bin --ticks -s event_clip \
-  --events data/events/events.csv --out reports/event_clip
+echo; echo "===== 事件盤夾子 (±20, 停損 40, 大事件停利 150 / 一般 100, 10 秒沒觸發取消, 台積電 20 秒) ====="
+# shellcheck disable=SC2086
+$TWQ backtest --data data/mtx_ticks.bin --ticks --instrument MTX -s event_clip $EVENTS --out reports/event_clip
 
-echo; echo "===== 破 day low ORB (高低差>100 且 9:30 前大盤成交>昨量0.3倍) ====="
-$TWQ backtest --data data/tx_ticks.bin --ticks -s orb_daylow \
+echo; echo "===== 破 day low ORB (高低差>100 且 9:30 前大盤成交>昨量0.45倍, 停損 0.4%) ====="
+$TWQ backtest --data data/mtx_ticks.bin --ticks --instrument MTX -s orb_daylow \
   --series taiex_vol=data/taiex_cumamt.csv --out reports/orb_daylow
 
 echo; echo "報告: reports/event_clip/report.html  reports/orb_daylow/report.html"

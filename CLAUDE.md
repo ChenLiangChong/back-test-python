@@ -9,7 +9,7 @@ answer in Traditional Chinese. **Current status, results so far and the next ste
 
 ```bash
 cargo build --release                                   # binary: target/release/twq
-cargo test --release                                    # 55 tests, all must pass
+cargo test --release                                    # 56 tests, all must pass
 cargo fmt --all && cargo clippy --release --all-targets -- -D warnings   # CI runs both
 ./target/release/twq strategies                         # list strategies + params
 ./target/release/twq backtest --data <bars.bin|csv> -s <strategy> -p "k=v,..." --out reports/x

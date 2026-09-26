@@ -31,24 +31,32 @@
 3. 匯入資料，並自動校正夜盤日期。
 4. 回測兩個策略，產生 `reports/*/report.html` 並自動開啟。
 
-| 策略 | 規則（照你給的） | 我先補上的假設（都可以改參數） |
+| 策略 | 規則（照你給的） | 還是假設的部分（都可以改參數） |
 |---|---|---|
-| `event_clip` 事件盤夾子 | 公布前在最新價上下 ±20 點掛觸價單（OCO，二選一），停損 40<br>**大事件**停利 150：非農+失業率、FOMC、CPI<br>**一般事件**停利 100：JOLTS、PPI、MSCI 13:25、富時 13:25、台積電營收 13:30 | 公布後 5 分鐘沒觸發就取消（`cancel_min`）<br>持倉只看停損停利，收盤前平倉（`max_hold_min=0`） |
-| `orb_daylow` 破 day low | 9:30 前日盤台指期高低差 > 100 點，且 9:30 前加權指數成交 > 昨量 × 0.3<br>兩個條件都達標後，掛「日盤最低點 − 1」觸價空單 | 停損 40（沿用事件盤）、不設停利、13:40 平倉（`sl` / `tp` / `exit_hhmm`）<br>「成交量」預設用**成交金額**，要改成股數請用 `taiex_cumvol.csv` |
+| `event_clip` 事件盤夾子 | 公布前在最新價上下 ±20 點掛觸價單（OCO，二選一），停損 40<br>**大事件**停利 150：非農+失業率、FOMC、CPI<br>**一般事件**停利 100：JOLTS、PPI、MSCI 13:25、富時 13:25、台積電營收 13:30<br>公布後 10 秒沒觸發就取消，台積電營收 20 秒（`cancel_sec` / `cancel_sec_tsmc`）；持倉到收盤前平倉 | 無<br>（1 分 K 最短只能模擬公布那 1 分鐘，10 秒規則要用逐筆資料才準） |
+| `orb_daylow` 破 day low | 9:30 前日盤台指期高低差 > 100 點，且 9:30 前加權指數成交**金額** > 昨日 × 0.45<br>9:30 前兩個條件一達標就掛「當時日盤最低點 − 1」觸價空單<br>停損 = 進場價 × 0.4%（`sl_pct`），不設停利，抱到尾盤 | 尾盤平倉時間 13:40（`exit_hhmm`） |
 
-事件日期放在 [`data/events/events.csv`](data/events/events.csv)，可以用台灣時間或美東時間填寫，程式會自動換算時區和夏令時間。
-2026 年 8～9 月的日期已經核對過；要回測更早的期間，就自己在這個檔案裡補上日期。
+事件日期檔放在 `data/events/`（可以用台灣時間或美東時間填寫，程式會自動換算時區和夏令時間）：
 
-手動執行的方式：
+| 檔案 | 內容 | 更新方式 |
+|---|---|---|
+| `fomc.csv` | FOMC 2017～2027 | 聯準會官網 |
+| `us_macro.csv` | 非農、CPI、PPI、JOLTS 2017～2026 | `python3 tools/fetch_release_dates.py`（ALFRED） |
+| `tsmc_revenue.csv` | 台積電營收 2017～ | `python3 tools/fetch_tsmc_revenue_dates.py`（公開資訊觀測站） |
+| `events.csv` | 2026 年 8～9 月手工核對的事件 | 手動 |
+
+MSCI／富時調整日用 `--index-events 2017-2026` 依規則自動產生（未處理國定假日）。
+
+手動執行的方式（小台 1 口）：
 ```bash
 python3 tools/fetch_data.py                     # 下載資料 (期交所 30 天 + 證交所大盤成交)
-./target/release/twq data taifex "data/taifex/Daily_*.csv" --product TX --out data/tx_ticks.bin --bars-tf 1m --bars-out data/tx_1m.bin
-./target/release/twq backtest --data data/tx_ticks.bin --ticks -s event_clip --events data/events/events.csv --out reports/event_clip
-./target/release/twq backtest --data data/tx_ticks.bin --ticks -s orb_daylow --series taiex_vol=data/taiex_cumamt.csv --out reports/orb_daylow
+./target/release/twq data taifex "data/taifex/Daily_*.csv" --product MTX --out data/mtx_ticks.bin --bars-tf 1m --bars-out data/mtx_1m.bin
+./target/release/twq backtest --data data/mtx_ticks.bin --ticks --instrument MTX -s event_clip --events data/events/fomc.csv --events data/events/us_macro.csv --events data/events/tsmc_revenue.csv --index-events 2026-2026 --out reports/event_clip
+./target/release/twq backtest --data data/mtx_ticks.bin --ticks --instrument MTX -s orb_daylow --series taiex_vol=data/taiex_cumamt.csv --out reports/orb_daylow
 # 調參數，例如停損改 30、只做大事件:
-./target/release/twq backtest --data data/tx_ticks.bin --ticks -s event_clip --events data/events/events.csv -p "sl=30,tier=1"
+./target/release/twq backtest --data data/mtx_ticks.bin --ticks --instrument MTX -s event_clip --events data/events/events.csv -p "sl=30,tier=1"
 # 平行最佳化:
-./target/release/twq optimize --data data/tx_1m.bin -s event_clip --events data/events/events.csv --grid clip=10:30:5 --grid sl=20:60:10 --min-trades 3
+./target/release/twq optimize --data data/mtx_1m.bin --instrument MTX -s event_clip --events data/events/events.csv --grid clip=10:30:5 --grid sl=20:60:10 --min-trades 3
 ```
 
 > 期交所免費資料只保留最近 30 個交易日，大約涵蓋 10 個事件，**樣本很少**，只能當作初步驗證。

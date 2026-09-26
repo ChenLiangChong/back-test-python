@@ -4,10 +4,11 @@
 //! through becomes the trade; it carries a stop-loss `sl` and a take-profit that depends
 //! on the event tier (大事件 `tp_big`, 一般事件 `tp_normal`).
 //!
-//! Defaults follow the user's rules: 夾子 ±20, 停損 40, 大事件停利 150, 一般事件停利 100.
-//! Assumptions (parameters): untriggered clips are cancelled `cancel_min` minutes after
-//! the release; an open trade exits on SL / TP, after `max_hold_min` (0 = no limit), or
-//! just before the session closes.
+//! Defaults follow the user's rules: 夾子 ±20, 停損 40, 大事件停利 150, 一般事件停利 100;
+//! untriggered clips are cancelled `cancel_sec` (10 s) after the release, 20 s for 台積電營收
+//! (`cancel_sec_tsmc`); an open trade exits on SL / TP, after `max_hold_min` (0 = no limit),
+//! or just before the session closes. On 1-minute bars the cancel window cannot be shorter
+//! than the release bar, so bar results overstate how often a clip triggers.
 //!
 //! Runs on 1-minute bars (clips placed at the close of the bar ending at the release
 //! time) or, more precisely, on ticks (placed `lead_sec` seconds before the release).
@@ -22,7 +23,7 @@ use crate::common::near_session_close;
 
 #[derive(Clone, Copy, Debug)]
 struct Active {
-    ev_ts: Ts,
+    cancel_at: Ts,
     entered_at: Option<Ts>,
 }
 
@@ -35,6 +36,7 @@ pub struct EventClip {
     tp_normal: f64,
     lead: Ts,
     cancel_after: Ts,
+    cancel_after_tsmc: Ts,
     max_hold: Ts,
     qty: i64,
     tier_filter: i64,
@@ -52,8 +54,9 @@ impl EventClip {
         ("tp_big", 150.0, "大事件停利 (點) — 非農/失業率/FOMC/CPI"),
         ("tp_normal", 100.0, "一般事件停利 (點) — JOLTS/PPI/MSCI/富時/台積電營收"),
         ("lead_sec", 1.0, "tick 模式: 公布前幾秒掛出夾子"),
-        ("cancel_min", 5.0, "公布後幾分鐘沒觸發就取消夾子 (假設)"),
-        ("max_hold_min", 0.0, "最長持倉分鐘, 0 = 只看停損停利 / 收盤前平倉 (假設)"),
+        ("cancel_sec", 10.0, "公布後幾秒沒觸發就取消夾子 (1 分 K 模式最短就是公布那根 K 棒)"),
+        ("cancel_sec_tsmc", 20.0, "台積電營收 (TSMC_REV) 幾秒沒觸發就取消"),
+        ("max_hold_min", 0.0, "最長持倉分鐘, 0 = 只看停損停利 / 收盤前平倉"),
         ("qty", 1.0, "口數"),
         ("tier", 0.0, "0 全部事件 / 1 只做大事件 / 2 只做一般事件"),
     ];
@@ -67,7 +70,8 @@ impl EventClip {
             tp_big: p.get("tp_big", 150.0),
             tp_normal: p.get("tp_normal", 100.0),
             lead: (p.get("lead_sec", 1.0) * US_PER_SEC as f64) as Ts,
-            cancel_after: (p.get("cancel_min", 5.0) * US_PER_MIN as f64) as Ts,
+            cancel_after: (p.get("cancel_sec", 10.0) * US_PER_SEC as f64) as Ts,
+            cancel_after_tsmc: (p.get("cancel_sec_tsmc", 20.0) * US_PER_SEC as f64) as Ts,
             max_hold: (p.get("max_hold_min", 0.0) * US_PER_MIN as f64) as Ts,
             qty: p.get("qty", 1.0) as i64,
             tier_filter: p.get("tier", 0.0) as i64,
@@ -99,7 +103,7 @@ impl EventClip {
                 } else {
                     false
                 }
-            } else if a.entered_at.is_some() || now >= a.ev_ts + self.cancel_after {
+            } else if a.entered_at.is_some() || now >= a.cancel_at {
                 // trade closed by SL / TP, or the release did not move price enough
                 ctx.cancel_all();
                 true
@@ -135,7 +139,8 @@ impl EventClip {
         ctx.attach_bracket(up, br);
         let dn = ctx.submit(Side::Sell, self.qty, OrderKind::Stop(reference - self.clip), Tif::Rod, oco, e.name);
         ctx.attach_bracket(dn, br);
-        self.active = Some(Active { ev_ts: e.ts, entered_at: None });
+        let wait = if e.name == "TSMC_REV" { self.cancel_after_tsmc } else { self.cancel_after };
+        self.active = Some(Active { cancel_at: e.ts + wait, entered_at: None });
         self.armed_count += 1;
     }
 }

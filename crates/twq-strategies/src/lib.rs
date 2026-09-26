@@ -90,7 +90,7 @@ pub const REGISTRY: &[StrategyInfo] = &[
     },
     StrategyInfo {
         name: "orb_daylow",
-        description: "你的 ORB: 9:30 前高低差>100 且大盤量>昨量0.3倍 → 破 day low −1 放空 (需 --series taiex_vol=...)",
+        description: "你的 ORB: 9:30 前高低差>100 且大盤量>昨量0.45倍 → 破 day low −1 放空, 停損 0.4% (需 --series taiex_vol=...)",
         params: orb_daylow::OrbDayLow::PARAMS,
         build: |p, inp| {
             let vol = if p.flag("use_vol", true) {

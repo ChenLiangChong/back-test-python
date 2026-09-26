@@ -1,10 +1,10 @@
 //! 使用者的 ORB: 破日盤 day low 放空.
 //!
 //! 1. 9:30 前, 日盤台指期 (08:45 起) 最高 − 最低 > `range_pts` (100 點)
-//! 2. 9:30 前, 加權指數累積成交 > 昨日全天成交 × `vol_ratio` (0.3 倍)
+//! 2. 9:30 前, 加權指數累積成交 > 昨日全天成交 × `vol_ratio` (0.45 倍)
 //!
-//! 兩個條件都達標後, 在「日盤最低點 − `offset` (1 點)」掛觸價空單, 破 day low 自動進場.
-//! 出場規則使用者尚未指定, 以參數表示 (預設: 停損 40 點, 不設停利, 13:40 平倉).
+//! 9:30 前兩個條件一達標就掛單 (`at_deadline` = 0): 「當時的日盤最低點 − `offset` (1 點)」觸價空單.
+//! 出場 (使用者規則): 停損 = 進場價 × 0.4% (`sl_pct`), 不設停利, 抱到尾盤 13:40 平倉.
 //!
 //! 條件 2 需要大盤累積成交資料: `--series taiex_vol=<csv>` (timestamp,累積成交金額或量),
 //! 由 `tools/fetch_data.py` 從證交所「每5秒委託成交統計」下載.
@@ -50,14 +50,14 @@ impl OrbDayLow {
     pub const PARAMS: &'static [(&'static str, f64, &'static str)] = &[
         ("range_pts", 100.0, "條件1: 9:30 前日盤高低差 > N 點"),
         ("range_pct", 0.0, ">0 時改用百分比: 高低差 > 開盤價 × N% (取代 range_pts)"),
-        ("vol_ratio", 0.3, "條件2: 9:30 前大盤累積成交 > 昨量 × N"),
+        ("vol_ratio", 0.45, "條件2: 9:30 前大盤累積成交 > 昨量 × N"),
         ("use_vol", 1.0, "1 = 使用條件2 (需 --series taiex_vol=...), 0 = 只看條件1"),
         ("deadline", 930.0, "條件須在此時間前達成 (hhmm)"),
         ("at_deadline", 0.0, "1 = 等到 deadline (9:30) 才檢查條件並掛單; 0 = 之前任何時間達標就掛"),
         ("offset", 1.0, "觸價空單 = day low − N 點"),
-        ("sl", 40.0, "停損 (點) — 使用者未指定, 暫用事件盤的 40"),
-        ("sl_pct", 0.0, ">0 時停損改用百分比: 進場價 × N% (取代 sl)"),
-        ("tp", 0.0, "停利 (點), 0 = 不設"),
+        ("sl", 40.0, "停損 (點), sl_pct = 0 時才使用"),
+        ("sl_pct", 0.4, "停損 = 進場價 × N% (使用者規則: 大盤點數 0.4%), 0 = 改用固定點數 sl"),
+        ("tp", 0.0, "停利 (點), 0 = 不設 (使用者規則: 抱到尾盤)"),
         ("tp_pct", 0.0, ">0 時停利改用百分比: 進場價 × N% (取代 tp)"),
         ("exit_hhmm", 1340.0, "強制平倉時間"),
         ("qty", 1.0, "口數"),
@@ -67,10 +67,10 @@ impl OrbDayLow {
         Self {
             range_pts: p.get("range_pts", 100.0),
             range_pct: p.get("range_pct", 0.0),
-            sl_pct: p.get("sl_pct", 0.0),
+            sl_pct: p.get("sl_pct", 0.4),
             tp_pct: p.get("tp_pct", 0.0),
             day_open: f64::NAN,
-            vol_ratio: p.get("vol_ratio", 0.3),
+            vol_ratio: p.get("vol_ratio", 0.45),
             deadline_min: hhmm_to_min(p.get("deadline", 930.0) as u32),
             at_deadline: p.flag("at_deadline", false),
             offset: p.get("offset", 1.0),

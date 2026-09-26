@@ -117,6 +117,20 @@ fn clip_tick_mode_uses_pre_release_price() {
 }
 
 #[test]
+fn clip_cancelled_after_10s_but_tsmc_waits_20s() {
+    // quiet at 20000, first move through the clip 15 s after the release
+    let ev = make_ts(2026, 9, 10, 13, 30, 0, 0);
+    let mut ticks: Vec<Tick> =
+        (0..75).map(|i| Tick::trade(ev - 60 * US_PER_SEC + i * US_PER_SEC, 20000.0, 1.0)).collect();
+    ticks.extend((0..20).map(|i| Tick::trade(ev + 15 * US_PER_SEC + i * US_PER_SEC, 20030.0 + i as f64, 1.0)));
+    for (text, fills) in [("2026-09-10 13:30:00,PPI,normal\n", 0), ("2026-09-10 13:30:00,TSMC_REV,normal\n", 1)] {
+        let mut s = build_with("event_clip", &Params::new(), &events(text)).unwrap();
+        let r = run_ticks(&ticks, &mut s, &cfg());
+        assert_eq!(r.stats.fills, fills, "{text}"); // entry only, the trade is still open at the end
+    }
+}
+
+#[test]
 fn orb_daylow_enters_on_break_of_day_low() {
     let d = make_ts(2026, 9, 2, 8, 45, 0, 0);
     // the previous trading day's session (so "昨量" really is yesterday's), quiet
@@ -146,10 +160,10 @@ fn orb_daylow_enters_on_break_of_day_low() {
     }
     // quiet until the close so the 13:40 exit closes the trade
     bars.extend(flat_bars(d + 80 * US_PER_MIN, 220, 19945.0));
-    // TAIEX cumulative turnover: yesterday total 3000, today 1200 by 09:20 (> 0.3 x 3000)
+    // TAIEX cumulative turnover: yesterday total 3000, today 1500 by 09:20 (> 0.45 x 3000)
     let y = make_ts(2026, 9, 1, 13, 30, 0, 0);
     let series =
-        vec![(y, 3000.0), (make_ts(2026, 9, 2, 9, 0, 0, 0), 100.0), (make_ts(2026, 9, 2, 9, 20, 0, 0), 1200.0)];
+        vec![(y, 3000.0), (make_ts(2026, 9, 2, 9, 0, 0, 0), 100.0), (make_ts(2026, 9, 2, 9, 20, 0, 0), 1500.0)];
     let mut map = HashMap::new();
     map.insert("taiex_vol".to_string(), Arc::new(series));
     let inp = Inputs { events: Arc::new(vec![]), series: map };
@@ -165,15 +179,15 @@ fn orb_daylow_enters_on_break_of_day_low() {
     let mut map = HashMap::new();
     map.insert(
         "taiex_vol".to_string(),
-        Arc::new(vec![(make_ts(2026, 8, 31, 13, 30, 0, 0), 3000.0), (make_ts(2026, 9, 2, 9, 20, 0, 0), 1200.0)]),
+        Arc::new(vec![(make_ts(2026, 8, 31, 13, 30, 0, 0), 3000.0), (make_ts(2026, 9, 2, 9, 20, 0, 0), 1500.0)]),
     );
     let inp = Inputs { events: Arc::new(vec![]), series: map };
     let mut s = build_with("orb_daylow", &Params::new(), &inp).unwrap();
     assert!(run_bars(&bars, &mut s, &cfg()).trades.is_empty());
 
-    // volume condition not met -> no trade
+    // volume condition not met (1300 < 0.45 x 3000) -> no trade
     let mut map = HashMap::new();
-    map.insert("taiex_vol".to_string(), Arc::new(vec![(y, 30_000.0), (make_ts(2026, 9, 2, 9, 20, 0, 0), 1200.0)]));
+    map.insert("taiex_vol".to_string(), Arc::new(vec![(y, 3000.0), (make_ts(2026, 9, 2, 9, 20, 0, 0), 1300.0)]));
     let inp = Inputs { events: Arc::new(vec![]), series: map };
     let mut s = build_with("orb_daylow", &Params::new(), &inp).unwrap();
     assert!(run_bars(&bars, &mut s, &cfg()).trades.is_empty());
