@@ -203,12 +203,15 @@ crates/
   twq-live/        live runner、風控、bridge 協定/客戶端、模擬 bridge、延遲量測、日誌
   twq-cli/         `twq` 指令
 bridge/            群益 SKCOM Windows bridge (Python)，含 --fake 自我測試模式
+tools/             資料下載: fetch_data.py (期交所 30 天逐筆 + 證交所大盤成交)、
+                   fetch_community_data.py (網友整理 1998~2023 1 分 K)、fetch_release_dates.py (FRED 經濟數據日期)
+docs/HANDOFF.md    目前進度、回測結果、下一步 (交接給本機 Claude Code)
 docs/RESEARCH.md   研究報告：群益 API、開源專案、台灣市場規則、資料來源、馬克羊策略
 docs/ARCHITECTURE.md 架構與延遲設計、bridge 協定規格
 data/sample/       原 repo 的 NQ 範例資料
 ```
 
-測試：`cargo test --release`，共 54 個測試，涵蓋以下項目：
+測試：`cargo test --release`，共 55 個測試，涵蓋以下項目：
 - 指標和樸素實作的比對
 - 撮合路徑
 - 手續費和稅
