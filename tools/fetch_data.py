@@ -70,7 +70,8 @@ def fetch_taifex(out_dir: str, days: int) -> int:
     os.makedirs(out_dir, exist_ok=True)
     today = dt.date.today()
     got = 0
-    for d in weekdays(today - dt.timedelta(days=days), today):
+    # 不抓今天: 今天的檔案在收盤前只有昨晚的夜盤, 存下來之後重跑會被跳過, 日盤就永遠缺了
+    for d in weekdays(today - dt.timedelta(days=days), today - dt.timedelta(days=1)):
         name = f"Daily_{d.year:04d}_{d.month:02d}_{d.day:02d}.csv"
         path = os.path.join(out_dir, name)
         if os.path.exists(path) and os.path.getsize(path) > 0:
